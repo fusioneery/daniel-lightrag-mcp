@@ -1,5 +1,18 @@
 # Daniel LightRAG MCP Server
 
+> 🔀 **Forked from:** [desimpkins/daniel-lightrag-mcp](https://github.com/desimpkins/daniel-lightrag-mcp)
+>
+> 🔧 **This fork includes critical fixes for MCP SDK compatibility:**
+> - Fixed response handling to properly work with MCP SDK decorators (`list[TextContent]` instead of `dict`)
+> - Improved error handling by raising exceptions instead of returning error responses
+> - Added support for `'mix'` query mode alongside existing modes
+> - Removed deprecated imports and cleaned up type safety
+> - All 22 tools tested and verified to work correctly with modern MCP clients
+>
+> ✅ **Status:** Production-ready with all core functionality preserved and enhanced
+
+---
+
 A comprehensive MCP (Model Context Protocol) server that provides **100% functional** integration with LightRAG API, offering **22 fully working tools** across 4 categories for complete document management, querying, knowledge graph operations, and system management.
 
 ## 🎉 Status: 100% Functional
