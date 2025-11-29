@@ -11,9 +11,6 @@ from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    CallToolRequest,
-    CallToolResult,
-    ListToolsRequest,
     ListToolsResult,
     Tool,
     TextContent,
@@ -64,7 +61,6 @@ def _validate_tool_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
         "get_documents_paginated": ["page", "page_size"],
         "delete_document": ["document_id"],
         "query_text": ["query"],
-        "query_text_stream": ["query"],
         "check_entity_exists": ["entity_name"],
         "update_entity": ["entity_id", "properties"],
         "update_relation": ["source_id", "target_id", "updated_data"],
@@ -95,9 +91,9 @@ def _validate_tool_arguments(tool_name: str, arguments: Dict[str, Any]) -> None:
         if not isinstance(page_size, int) or page_size < 1 or page_size > 100:
             raise LightRAGValidationError("Page size must be an integer between 1 and 100")
     
-    elif tool_name == "query_text" or tool_name == "query_text_stream":
-        mode = arguments.get("mode", "hybrid")
-        valid_modes = ["naive", "local", "global", "hybrid"]
+    elif tool_name == "query_text":
+        mode = arguments.get("mode", "mix")
+        valid_modes = ["naive", "local", "global", "hybrid", "mix"]
         if mode not in valid_modes:
             raise LightRAGValidationError(f"Invalid query mode '{mode}'. Must be one of: {valid_modes}")
     
@@ -117,8 +113,12 @@ def _serialize_result(result: Any) -> str:
         return json.dumps(result, indent=2)
 
 
-def _create_success_response(result: Any, tool_name: str) -> dict:
-    """Create standardized MCP success response."""
+def _create_success_response(result: Any, tool_name: str) -> list[TextContent]:
+    """Create standardized MCP success response.
+    
+    Returns a list of TextContent objects (not CallToolResult) because
+    the MCP SDK's @server.call_tool() decorator wraps the result automatically.
+    """
     logger.info("=" * 60)
     logger.info("CREATING SUCCESS RESPONSE")
     logger.info("=" * 60)
@@ -165,33 +165,29 @@ def _create_success_response(result: Any, tool_name: str) -> dict:
     logger.info(f"  - Length: {len(response_text)} characters")
     logger.info(f"  - Content preview: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
     
-    # Create response dictionary
-    response_dict = {
-        "content": [
-            {
-                "type": "text",
-                "text": response_text
-            }
-        ]
-    }
+    # Return list of TextContent (MCP SDK wraps this in CallToolResult automatically)
+    content = [TextContent(type="text", text=response_text)]
     
     logger.info(f"SUCCESS RESPONSE CREATED:")
-    logger.info(f"  - Response type: {type(response_dict)}")
-    logger.info(f"  - Response keys: {list(response_dict.keys())}")
-    logger.info(f"  - Content length: {len(response_dict['content'])}")
-    logger.info(f"  - Content[0] type: {response_dict['content'][0]['type']}")
-    logger.info(f"  - Content[0] text length: {len(response_dict['content'][0]['text'])}")
+    logger.info(f"  - Content length: {len(content)}")
+    logger.info(f"  - Content[0] type: {type(content[0])}")
+    logger.info(f"  - Content[0] text length: {len(content[0].text)}")
     logger.info("=" * 60)
     
-    return response_dict
+    return content
 
 
-def _create_error_response(error: Exception, tool_name: str) -> dict:
-    """Create standardized MCP error response."""
+def _handle_error(error: Exception, tool_name: str) -> None:
+    """Log error details and re-raise with formatted message.
+    
+    The MCP SDK's @server.call_tool() decorator catches exceptions
+    and converts them to CallToolResult with isError=True automatically.
+    We just need to raise an exception with a good error message.
+    """
     logger.error("=" * 60)
-    logger.error("CREATING ERROR RESPONSE")
+    logger.error("HANDLING ERROR")
     logger.error("=" * 60)
-    logger.error(f"ERROR RESPONSE INPUT:")
+    logger.error(f"ERROR INPUT:")
     logger.error(f"  - tool_name: '{tool_name}'")
     logger.error(f"  - error type: {type(error)}")
     logger.error(f"  - error message: {str(error)}")
@@ -206,7 +202,6 @@ def _create_error_response(error: Exception, tool_name: str) -> dict:
         "tool": tool_name,
         "error_type": type(error).__name__,
         "message": str(error),
-        "timestamp": asyncio.get_event_loop().time()
     }
     
     logger.error(f"BASE ERROR DETAILS:")
@@ -262,26 +257,11 @@ def _create_error_response(error: Exception, tool_name: str) -> dict:
     
     logger.error(f"FINAL ERROR DETAILS:")
     logger.error(f"  - error_details: {error_details}")
-    
-    # Create error response dictionary
-    error_response = {
-        "content": [
-            {
-                "type": "text",
-                "text": json.dumps(error_details, indent=2)
-            }
-        ],
-        "isError": True
-    }
-    
-    logger.error(f"ERROR RESPONSE CREATED:")
-    logger.error(f"  - Response type: {type(error_response)}")
-    logger.error(f"  - Response keys: {list(error_response.keys())}")
-    logger.error(f"  - isError: {error_response['isError']}")
-    logger.error(f"  - Content length: {len(error_response['content'])}")
     logger.error("=" * 60)
     
-    return error_response
+    # Re-raise with formatted JSON message - MCP SDK will catch this
+    # and create CallToolResult with isError=True
+    raise RuntimeError(json.dumps(error_details, indent=2)) from error
 
 
 @server.list_tools()
@@ -434,38 +414,48 @@ async def handle_list_tools() -> List[Tool]:#ListToolsResult:
                     "mode": {
                         "type": "string",
                         "description": "Query mode",
-                        "enum": ["naive", "local", "global", "hybrid"],
-                        "default": "hybrid"
+                        "enum": ["naive", "local", "global", "hybrid", "mix"],
+                        "default": "mix"
                     },
                     "only_need_context": {
                         "type": "boolean",
                         "description": "Whether to only return context without generation",
                         "default": False
-                    }
-                },
-                "required": ["query"]
-            }
-        ),
-        Tool(
-            name="query_text_stream",
-            description="Stream query results from LightRAG",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Query text"
                     },
-                    "mode": {
-                        "type": "string",
-                        "description": "Query mode",
-                        "enum": ["naive", "local", "global", "hybrid"],
-                        "default": "hybrid"
-                    },
-                    "only_need_context": {
+                    "include_references": {
                         "type": "boolean",
-                        "description": "Whether to only return context without generation",
-                        "default": False
+                        "description": "Include references in the response",
+                        "default": True
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of top results to return",
+                        "default": 40
+                    },
+                    "chunk_top_k": {
+                        "type": "integer",
+                        "description": "Number of top chunks to return",
+                        "default": 20
+                    },
+                    "max_entity_tokens": {
+                        "type": "integer",
+                        "description": "Maximum number of entity tokens",
+                        "default": 6000
+                    },
+                    "max_relation_tokens": {
+                        "type": "integer",
+                        "description": "Maximum number of relation tokens",
+                        "default": 8000
+                    },
+                    "max_total_tokens": {
+                        "type": "integer",
+                        "description": "Maximum total tokens",
+                        "default": 30000
+                    },
+                    "enable_rerank": {
+                        "type": "boolean",
+                        "description": "Enable reranking of results",
+                        "default": True
                     }
                 },
                 "required": ["query"]
@@ -786,8 +776,18 @@ async def handle_list_tools() -> List[Tool]:#ListToolsResult:
     return tools
 
 @server.call_tool()
-async def handle_call_tool(self, request: CallToolRequest) -> dict:
-    """Handle tool calls."""
+async def handle_call_tool(
+    name: str, arguments: dict
+) -> list[TextContent | ImageContent | EmbeddedResource]:
+    """Handle tool calls.
+    
+    The MCP SDK's @server.call_tool() decorator expects:
+    - Function signature: (name: str, arguments: dict)
+    - Return type: Iterable of TextContent/ImageContent/EmbeddedResource
+    
+    The SDK wraps the return value in CallToolResult automatically.
+    If an exception is raised, SDK creates CallToolResult with isError=True.
+    """
     global lightrag_client
     
     # === COMPREHENSIVE LOGGING START ===
@@ -797,33 +797,16 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
     
     # Log all incoming parameters with full details
     logger.info(f"HANDLER INPUT ANALYSIS:")
-    logger.info(f"  - self type: {type(self)}")
-    logger.info(f"  - self content: {repr(self)}")
-    logger.info(f"  - self length: {len(str(self)) if isinstance(self, str) else 'N/A'}")
-    logger.info(f"  - request type: {type(request)}")
-    logger.info(f"  - request content: {repr(request)}")
+    logger.info(f"  - name: {repr(name)} (type: {type(name)})")
+    logger.info(f"  - arguments: {repr(arguments)} (type: {type(arguments)})")
     
-    # Check all attributes of self and request
-    if hasattr(self, '__dict__'):
-        logger.info(f"  - self.__dict__: {self.__dict__}")
-    else:
-        logger.info(f"  - self has no __dict__ attribute")
-        
-    if hasattr(request, '__dict__'):
-        logger.info(f"  - request.__dict__: {request.__dict__}")
-    else:
-        logger.info(f"  - request has no __dict__ attribute")
-        
-    # Log request attributes if it's a dict
-    if isinstance(request, dict):
-        logger.info(f"  - request keys: {list(request.keys())}")
-        logger.info(f"  - request values: {list(request.values())}")
-        for key, value in request.items():
-            logger.info(f"    - request['{key}'] = {repr(value)} (type: {type(value)})")
+    # Log arguments if it's a dict
+    if isinstance(arguments, dict):
+        logger.info(f"  - arguments keys: {list(arguments.keys())}")
+        for key, value in arguments.items():
+            logger.info(f"    - arguments['{key}'] = {repr(value)} (type: {type(value)})")
     
-    # The MCP library passes tool_name as 'self' and empty dict as 'request'
-    tool_name = self  # self is the tool name string
-    arguments = request or {}   # arguments are always empty for now
+    tool_name = name
     
     logger.info(f"EXTRACTED PARAMETERS:")
     logger.info(f"  - tool_name: '{tool_name}' (type: {type(tool_name)})")
@@ -879,7 +862,7 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
             logger.error(f"  - Exception args: {e.args}")
             import traceback
             logger.error(f"  - Full traceback: {traceback.format_exc()}")
-            return _create_error_response(
+            _handle_error(
                 LightRAGConnectionError(f"Failed to initialize LightRAG client: {str(e)}"),
                 tool_name
             )
@@ -1297,13 +1280,27 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
             
             # Extract and validate parameters
             query = arguments.get("query", "")
-            mode = arguments.get("mode", "hybrid")
+            mode = arguments.get("mode", "mix")
             only_need_context = arguments.get("only_need_context", False)
+            include_references = arguments.get("include_references", True)
+            top_k = arguments.get("top_k", 40)
+            chunk_top_k = arguments.get("chunk_top_k", 20)
+            max_entity_tokens = arguments.get("max_entity_tokens", 6000)
+            max_relation_tokens = arguments.get("max_relation_tokens", 8000)
+            max_total_tokens = arguments.get("max_total_tokens", 30000)
+            enable_rerank = arguments.get("enable_rerank", True)
             
             logger.info(f"QUERY_TEXT PARAMETERS:")
             logger.info(f"  - query: '{query}' (length: {len(query)})")
             logger.info(f"  - mode: '{mode}'")
             logger.info(f"  - only_need_context: {only_need_context}")
+            logger.info(f"  - include_references: {include_references}")
+            logger.info(f"  - top_k: {top_k}")
+            logger.info(f"  - chunk_top_k: {chunk_top_k}")
+            logger.info(f"  - max_entity_tokens: {max_entity_tokens}")
+            logger.info(f"  - max_relation_tokens: {max_relation_tokens}")
+            logger.info(f"  - max_total_tokens: {max_total_tokens}")
+            logger.info(f"  - enable_rerank: {enable_rerank}")
             logger.info(f"  - query type: {type(query)}")
             
             # Validate query
@@ -1312,7 +1309,7 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
                 logger.error("  - Query is empty or whitespace only")
                 raise LightRAGValidationError("Query cannot be empty")
             
-            valid_modes = ["naive", "local", "global", "hybrid"]
+            valid_modes = ["naive", "local", "global", "hybrid", "mix"]
             if mode not in valid_modes:
                 logger.error("QUERY_TEXT MODE ERROR:")
                 logger.error(f"  - Invalid mode: '{mode}'")
@@ -1324,7 +1321,16 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
             
             try:
                 result = await lightrag_client.query_text(
-                    query, mode=mode, only_need_context=only_need_context
+                    query, 
+                    mode=mode, 
+                    only_need_context=only_need_context,
+                    include_references=include_references,
+                    top_k=top_k,
+                    chunk_top_k=chunk_top_k,
+                    max_entity_tokens=max_entity_tokens,
+                    max_relation_tokens=max_relation_tokens,
+                    max_total_tokens=max_total_tokens,
+                    enable_rerank=enable_rerank
                 )
                 logger.info("QUERY_TEXT SUCCESS:")
                 logger.info(f"  - Result type: {type(result)}")
@@ -1343,7 +1349,6 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
                 logger.info("  - Calling _create_success_response()...")
                 response = _create_success_response(result, tool_name)
                 logger.info(f"  - Success response type: {type(response)}")
-                logger.info(f"  - Success response keys: {list(response.keys())}")
                 return response
             except Exception as e:
                 logger.error("QUERY_TEXT FAILED:")
@@ -1353,92 +1358,6 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
                 logger.error(f"  - Query: '{query}'")
                 logger.error(f"  - Mode: '{mode}'")
                 logger.error(f"  - Only need context: {only_need_context}")
-                import traceback
-                logger.error(f"  - Full traceback: {traceback.format_exc()}")
-                raise
-        
-        elif tool_name == "query_text_stream":
-            logger.info("EXECUTING QUERY_TEXT_STREAM TOOL:")
-            logger.info(f"  - Tool: {tool_name}")
-            logger.info(f"  - Client type: {type(lightrag_client)}")
-            logger.info(f"  - Client base_url: {lightrag_client.base_url}")
-            logger.info(f"  - Raw arguments: {arguments}")
-            
-            # Extract and validate parameters
-            query = arguments.get("query", "")
-            mode = arguments.get("mode", "hybrid")
-            only_need_context = arguments.get("only_need_context", False)
-            
-            logger.info(f"QUERY_TEXT_STREAM PARAMETERS:")
-            logger.info(f"  - query: '{query}' (length: {len(query)})")
-            logger.info(f"  - mode: '{mode}'")
-            logger.info(f"  - only_need_context: {only_need_context}")
-            logger.info(f"  - query type: {type(query)}")
-            
-            # Validate query
-            if not query or not query.strip():
-                logger.error("QUERY_TEXT_STREAM VALIDATION ERROR:")
-                logger.error("  - Query is empty or whitespace only")
-                raise LightRAGValidationError("Query cannot be empty")
-            
-            valid_modes = ["naive", "local", "global", "hybrid"]
-            if mode not in valid_modes:
-                logger.error("QUERY_TEXT_STREAM MODE ERROR:")
-                logger.error(f"  - Invalid mode: '{mode}'")
-                logger.error(f"  - Valid modes: {valid_modes}")
-                raise LightRAGValidationError(f"Invalid query mode '{mode}'. Must be one of: {valid_modes}")
-            
-            logger.info("  - Parameter validation passed")
-            logger.info("  - Starting streaming query...")
-            
-            try:
-                # Collect streaming results
-                chunks = []
-                chunk_count = 0
-                total_length = 0
-                
-                logger.info("STREAMING COLLECTION:")
-                async for chunk in lightrag_client.query_text_stream(
-                    query, mode=mode, only_need_context=only_need_context
-                ):
-                    chunks.append(chunk)
-                    chunk_count += 1
-                    chunk_length = len(str(chunk))
-                    total_length += chunk_length
-                    
-                    # Log every 50th chunk to avoid spam
-                    if chunk_count % 50 == 0:
-                        logger.info(f"  - Collected {chunk_count} chunks, total length: {total_length}")
-                
-                logger.info("QUERY_TEXT_STREAM SUCCESS:")
-                logger.info(f"  - Total chunks collected: {chunk_count}")
-                logger.info(f"  - Total response length: {total_length}")
-                logger.info(f"  - Average chunk size: {total_length / chunk_count if chunk_count > 0 else 0:.2f}")
-                
-                # Join chunks into final response
-                streaming_response = "".join(chunks)
-                result = {"streaming_response": streaming_response}
-                
-                logger.info(f"STREAMING RESULT:")
-                logger.info(f"  - Final response length: {len(streaming_response)}")
-                logger.info(f"  - Response preview: {streaming_response[:200]}{'...' if len(streaming_response) > 200 else ''}")
-                
-                # Create MCP response
-                response = CallToolResult(
-                    content=[TextContent(type="text", text=json.dumps(result, indent=2))]
-                )
-                logger.info(f"  - MCP response created successfully")
-                return response
-                
-            except Exception as e:
-                logger.error("QUERY_TEXT_STREAM FAILED:")
-                logger.error(f"  - Exception type: {type(e)}")
-                logger.error(f"  - Exception message: {str(e)}")
-                logger.error(f"  - Exception args: {e.args}")
-                logger.error(f"  - Query: '{query}'")
-                logger.error(f"  - Mode: '{mode}'")
-                logger.error(f"  - Only need context: {only_need_context}")
-                logger.error(f"  - Chunks collected before error: {chunk_count}")
                 import traceback
                 logger.error(f"  - Full traceback: {traceback.format_exc()}")
                 raise
@@ -1902,7 +1821,6 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
                 logger.info("  - Calling _create_success_response()...")
                 response = _create_success_response(result, tool_name)
                 logger.info(f"  - Success response type: {type(response)}")
-                logger.info(f"  - Success response keys: {list(response.keys())}")
                 return response
             except Exception as e:
                 logger.error("GET_PIPELINE_STATUS FAILED:")
@@ -2086,10 +2004,7 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
         else:
             error_msg = f"Unknown tool: {tool_name}"
             logger.error(error_msg)
-            return CallToolResult(
-                content=[TextContent(type="text", text=error_msg)],
-                isError=True
-            )
+            raise ValueError(error_msg)
     
     except LightRAGError as e:
         logger.error("LIGHTRAG EXCEPTION CAUGHT:")
@@ -2100,7 +2015,7 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
         logger.error(f"  - Response data: {getattr(e, 'response_data', 'N/A')}")
         import traceback
         logger.error(f"  - Traceback: {traceback.format_exc()}")
-        return _create_error_response(e, tool_name)
+        _handle_error(e, tool_name)
     
     except Exception as e:
         logger.error("GENERIC EXCEPTION CAUGHT:")
@@ -2110,21 +2025,33 @@ async def handle_call_tool(self, request: CallToolRequest) -> dict:
         logger.error(f"  - Tool name: {tool_name}")
         import traceback
         logger.error(f"  - Traceback: {traceback.format_exc()}")
-        return _create_error_response(e, tool_name)
+        _handle_error(e, tool_name)
 
 
 async def main():
     """Main entry point for the MCP server."""
+    import sys
+    import platform
+    
+    # Force UTF-8 encoding for stdin/stdout to avoid encoding issues
+    # This is especially important on Windows where default encoding might be different
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout.reconfigure(encoding='utf-8')
+    if sys.stdin.encoding != 'utf-8':
+        sys.stdin.reconfigure(encoding='utf-8')
+    if sys.stderr.encoding != 'utf-8':
+        sys.stderr.reconfigure(encoding='utf-8')
+    
     logger.info("=" * 100)
     logger.info("STARTING LIGHTRAG MCP SERVER")
     logger.info("=" * 100)
     
     # Log system information
-    import sys
-    import platform
     logger.info("SYSTEM INFORMATION:")
     logger.info(f"  - Python version: {sys.version}")
     logger.info(f"  - Platform: {platform.platform()}")
+    logger.info(f"  - stdout encoding: {sys.stdout.encoding}")
+    logger.info(f"  - stdin encoding: {sys.stdin.encoding}")
     logger.info(f"  - Current working directory: {os.getcwd()}")
     logger.info(f"  - Script path: {__file__}")
     

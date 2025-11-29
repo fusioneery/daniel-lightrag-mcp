@@ -23,6 +23,7 @@ class QueryMode(str, Enum):
     LOCAL = "local"
     GLOBAL = "global"
     HYBRID = "hybrid"
+    MIX = "mix"
 
 
 class PipelineStatus(str, Enum):
@@ -110,9 +111,16 @@ class ClearCacheRequest(BaseModel):
 class QueryRequest(BaseModel):
     """Request model for text queries."""
     query: str = Field(..., description="Query text")
-    mode: QueryMode = Field(QueryMode.HYBRID, description="Query mode")
+    mode: QueryMode = Field(QueryMode.MIX, description="Query mode")
     only_need_context: bool = Field(False, description="Whether to only return context")
+    include_references: bool = Field(True, description="Include references in the response")
     stream: bool = Field(False, description="Whether to stream results")
+    top_k: int = Field(40, description="Number of top results to return")
+    chunk_top_k: int = Field(20, description="Number of top chunks to return")
+    max_entity_tokens: int = Field(6000, description="Maximum number of entity tokens")
+    max_relation_tokens: int = Field(8000, description="Maximum number of relation tokens")
+    max_total_tokens: int = Field(30000, description="Maximum total tokens")
+    enable_rerank: bool = Field(True, description="Enable reranking of results")
 
 
 # Knowledge Graph Request Models

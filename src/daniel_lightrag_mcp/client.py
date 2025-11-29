@@ -80,7 +80,11 @@ class LightRAGClient:
         self.timeout = timeout
         self.logger = logging.getLogger(__name__)
         
-        headers = {}
+        headers = {
+            "Accept": "application/json; charset=utf-8",
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept-Charset": "utf-8",
+        }
         if api_key:
             headers["X-API-Key"] = api_key
             
@@ -365,7 +369,19 @@ class LightRAGClient:
     
     # Query Methods (2 methods)
     
-    async def query_text(self, query: str, mode: str = "hybrid", only_need_context: bool = False) -> QueryResponse:
+    async def query_text(
+        self, 
+        query: str, 
+        mode: str = "mix", 
+        only_need_context: bool = False,
+        include_references: bool = True,
+        top_k: int = 40,
+        chunk_top_k: int = 20,
+        max_entity_tokens: int = 6000,
+        max_relation_tokens: int = 8000,
+        max_total_tokens: int = 30000,
+        enable_rerank: bool = True
+    ) -> QueryResponse:
         """Query LightRAG with text."""
         self.logger.info(f"Querying text with mode '{mode}': {query[:100]}{'...' if len(query) > 100 else ''}")
         
@@ -373,12 +389,23 @@ class LightRAGClient:
         if not query or not query.strip():
             raise LightRAGValidationError("Query cannot be empty")
         
-        valid_modes = ["naive", "local", "global", "hybrid"]
+        valid_modes = ["naive", "local", "global", "hybrid", "mix"]
         if mode not in valid_modes:
             raise LightRAGValidationError(f"Invalid query mode '{mode}'. Must be one of: {valid_modes}")
         
         try:
-            request_data = QueryRequest(query=query, mode=mode, only_need_context=only_need_context)
+            request_data = QueryRequest(
+                query=query, 
+                mode=mode, 
+                only_need_context=only_need_context,
+                include_references=include_references,
+                top_k=top_k,
+                chunk_top_k=chunk_top_k,
+                max_entity_tokens=max_entity_tokens,
+                max_relation_tokens=max_relation_tokens,
+                max_total_tokens=max_total_tokens,
+                enable_rerank=enable_rerank
+            )
             response_data = await self._make_request("POST", "/query", request_data.model_dump())
             result = QueryResponse(**response_data)
             
@@ -391,7 +418,18 @@ class LightRAGClient:
                 raise
             raise LightRAGError(f"Query operation failed: {str(e)}")
     
-    async def query_text_stream(self, query: str, mode: str = "hybrid", only_need_context: bool = False) -> AsyncGenerator[str, None]:
+    async def query_text_stream(
+        self, 
+        query: str, 
+        mode: str = "hybrid", 
+        only_need_context: bool = False,
+        top_k: int = 40,
+        chunk_top_k: int = 20,
+        max_entity_tokens: int = 6000,
+        max_relation_tokens: int = 8000,
+        max_total_tokens: int = 30000,
+        enable_rerank: bool = True
+    ) -> AsyncGenerator[str, None]:
         """Stream query results from LightRAG."""
         # Validate query parameters
         if not query or not query.strip():
@@ -404,7 +442,18 @@ class LightRAGClient:
         self.logger.info(f"Starting streaming query with mode '{mode}': {query[:100]}{'...' if len(query) > 100 else ''}")
         
         try:
-            request_data = QueryRequest(query=query, mode=mode, only_need_context=only_need_context, stream=True)
+            request_data = QueryRequest(
+                query=query, 
+                mode=mode, 
+                only_need_context=only_need_context, 
+                stream=True,
+                top_k=top_k,
+                chunk_top_k=chunk_top_k,
+                max_entity_tokens=max_entity_tokens,
+                max_relation_tokens=max_relation_tokens,
+                max_total_tokens=max_total_tokens,
+                enable_rerank=enable_rerank
+            )
             async for chunk in self._stream_request("POST", "/query/stream", request_data.model_dump()):
                 yield chunk
         except Exception as e:

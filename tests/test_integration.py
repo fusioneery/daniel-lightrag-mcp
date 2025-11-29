@@ -550,17 +550,17 @@ class TestToolListingIntegration:
         """Test that all required tools are listed with correct schemas."""
         result = await handle_list_tools()
         
-        # Verify all 22 tools are present
-        assert len(result.tools) == 22
+        # Verify all 20 tools are present
+        assert len(result) == 20
         
         # Group tools by category and verify counts
-        tool_names = [tool.name for tool in result.tools]
+        tool_names = [tool.name for tool in result]
         
         document_tools = [name for name in tool_names if name in [
             "insert_text", "insert_texts", "upload_document", "scan_documents",
-            "get_documents", "get_documents_paginated", "delete_document", "clear_documents"
+            "get_documents", "get_documents_paginated", "delete_document"
         ]]
-        assert len(document_tools) == 8
+        assert len(document_tools) == 7
         
         query_tools = [name for name in tool_names if name in ["query_text", "query_text_stream"]]
         assert len(query_tools) == 2
@@ -573,12 +573,12 @@ class TestToolListingIntegration:
         
         system_tools = [name for name in tool_names if name in [
             "get_pipeline_status", "get_track_status", "get_document_status_counts",
-            "clear_cache", "get_health"
+            "get_health"
         ]]
-        assert len(system_tools) == 5
+        assert len(system_tools) == 4
         
         # Verify each tool has proper schema structure
-        for tool in result.tools:
+        for tool in result:
             assert tool.name is not None
             assert tool.description is not None
             assert tool.inputSchema is not None
@@ -593,7 +593,7 @@ class TestToolListingIntegration:
         result = await handle_list_tools()
         
         # Find specific tools and verify their schemas
-        tools_by_name = {tool.name: tool for tool in result.tools}
+        tools_by_name = {tool.name: tool for tool in result}
         
         # Test insert_text schema
         insert_text_tool = tools_by_name["insert_text"]
